@@ -53,15 +53,24 @@ class AudioRecordService : Service() {
 
         Thread {
             try {
-                val downloadsDir =
+                val downloadDir =
                     Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+                val assistRecordsDir = File(downloadDir, "assistrecords")
+
+                if (!assistRecordsDir.exists()) {
+                    val created = assistRecordsDir.mkdirs()
+                    if (!created) {
+                        println("Не удалось создать папку assistrecords")
+                    }
+                }
+                val downloadsDir: File = assistRecordsDir
 
                 while (isRecording) {
-                    val fileName = "audio_record_${System.currentTimeMillis()}.wav"
+                    val fileName = "${System.currentTimeMillis()}.wav"
                     val file = File(downloadsDir, fileName)
                     val fos = FileOutputStream(file)
 
-                    val totalAudioLen = sampleRate * 2 * 10 // 5 секунд * 2 байта на сэмпл (16 бит)
+                    val totalAudioLen = sampleRate * 2 * 10 // 10 секунд * 2 байта на сэмпл (16 бит)
                     val totalDataLen = totalAudioLen + 36
                     val channels = 1
                     val byteRate = 16 * sampleRate * channels / 8
