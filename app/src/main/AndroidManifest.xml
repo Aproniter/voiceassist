@@ -32,12 +32,25 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
-
         <receiver android:name="androidx.media.session.MediaButtonReceiver" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MEDIA_BUTTON" />
             </intent-filter>
         </receiver>
+        <activity android:name=".StartServiceActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.example.myapplication.START_RECORD_SERVICE" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+        <activity android:name=".StopServiceActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.example.myapplication.STOP_RECORD_SERVICE" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
         <service
             android:name=".AudioRecordService"
             android:exported="false" />
