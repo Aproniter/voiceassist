@@ -1,4 +1,3 @@
-package com.example.myapplication
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -16,9 +15,16 @@ import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
 import android.media.AudioManager
+import android.media.audiofx.AcousticEchoCanceler
+import android.media.audiofx.AutomaticGainControl
+import android.media.audiofx.NoiseSuppressor
+import android.widget.Toast
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import kotlin.math.absoluteValue
 
 class AudioRecordService : Service() {
-
+    private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
     private lateinit var audioRecord: AudioRecord
     private var isRecording = false
     private val sampleRate = 44100
@@ -46,6 +52,15 @@ class AudioRecordService : Service() {
             bufferSize
         )
 
+        if (NoiseSuppressor.isAvailable()) {
+            NoiseSuppressor.create(audioRecord.audioSessionId)?.enabled = true
+        }
+//        if (AcousticEchoCanceler.isAvailable()) {
+//            AcousticEchoCanceler.create(audioRecord.audioSessionId)?.enabled = true
+//        }
+//        if (AutomaticGainControl.isAvailable()) {
+//            AutomaticGainControl.create(audioRecord.audioSessionId)?.enabled = true
+//        }
 
 
         isRecording = true
@@ -65,6 +80,8 @@ class AudioRecordService : Service() {
                 }
                 val downloadsDir: File = assistRecordsDir
 
+                val volumeThreshold = 1000
+
                 while (isRecording) {
                     val fileName = "${System.currentTimeMillis()}.wav"
                     val file = File(downloadsDir, fileName)
@@ -80,15 +97,40 @@ class AudioRecordService : Service() {
 
                     val buffer = ByteArray(bufferSize)
                     var bytesWritten = 0
+                    var isVolumeAboveThreshold = false
                     while (bytesWritten < totalAudioLen && isRecording) {
                         val read = audioRecord.read(buffer, 0, buffer.size)
                         if (read > 0) {
+                            val shortBuffer = ShortArray(read / 2)
+                            ByteBuffer.wrap(buffer, 0, read)
+                                .order(ByteOrder.LITTLE_ENDIAN)
+                                .asShortBuffer()
+                                .get(shortBuffer)
+
+                            val maxAmplitude = shortBuffer.map { kotlin.math.abs(it.toInt()) }.maxOrNull() ?: 0
+                            if (maxAmplitude > volumeThreshold) {
+                                isVolumeAboveThreshold = true
+                            }
+
+//                            mainHandler.post {
+//                                Toast.makeText(
+//                                    this,
+//                                    "maxAmplitude = $maxAmplitude, threshold = $volumeThreshold",
+//                                    Toast.LENGTH_SHORT
+//                                ).show()
+//                            }
+
+
                             fos.write(buffer, 0, read)
                             bytesWritten += read
                         }
                     }
                     fos.flush()
                     fos.close()
+                    if (!isVolumeAboveThreshold) {
+                        file.delete()
+                        isRecording = false
+                    }
                 }
             } catch (e: IOException) {
                 e.printStackTrace()
