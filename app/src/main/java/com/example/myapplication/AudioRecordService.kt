@@ -1,3 +1,5 @@
+package com.example.myapplication
+
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -38,6 +40,10 @@ class AudioRecordService : Service() {
         createNotificationChannel()
     }
 
+//    if (NoiseSuppressor.isAvailable()) {
+//        NoiseSuppressor.create(audioRecord.audioSessionId)?.enabled = true
+//    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         startForeground(1, createNotification())
         val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
@@ -51,25 +57,15 @@ class AudioRecordService : Service() {
             audioFormat,
             bufferSize
         )
-
         if (NoiseSuppressor.isAvailable()) {
             NoiseSuppressor.create(audioRecord.audioSessionId)?.enabled = true
         }
-//        if (AcousticEchoCanceler.isAvailable()) {
-//            AcousticEchoCanceler.create(audioRecord.audioSessionId)?.enabled = true
-//        }
-//        if (AutomaticGainControl.isAvailable()) {
-//            AutomaticGainControl.create(audioRecord.audioSessionId)?.enabled = true
-//        }
-
-
         isRecording = true
         audioRecord.startRecording()
 
         Thread {
             try {
-                val downloadDir =
-                    Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+                val downloadDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
                 val assistRecordsDir = File(downloadDir, "assistrecords")
 
                 if (!assistRecordsDir.exists()) {
@@ -85,57 +81,81 @@ class AudioRecordService : Service() {
                 while (isRecording) {
                     val fileName = "${System.currentTimeMillis()}.wav"
                     val file = File(downloadsDir, fileName)
-                    val fos = FileOutputStream(file)
 
-                    val totalAudioLen = sampleRate * 2 * 10 // 10 секунд * 2 байта на сэмпл (16 бит)
-                    val totalDataLen = totalAudioLen + 36
-                    val channels = 1
-                    val byteRate = 16 * sampleRate * channels / 8
+                    // Параметры записи
+                    var chunkDurationSec = 10  // стартовое время записи в секундах
+                    val maxChunkDurationSec = 40 // Максимальное увеличение длительности (40 сек)
+                    val chunkStepSec = 5 // шаг увеличения (5 сек)
+                    val minChunkDurationSec = 2 // минимальная длительность для сохранения файла
 
-                    writeWavHeader(fos, totalAudioLen.toLong(), totalDataLen.toLong(),
-                        sampleRate, channels, byteRate)
+                    fun chunkBytes(sec: Int) = sampleRate * 2 * sec
 
-                    val buffer = ByteArray(bufferSize)
-                    var bytesWritten = 0
+                    var targetBytes = chunkBytes(chunkDurationSec)
+
+                    val buffers = mutableListOf<ByteArray>()
+                    var bytesCollected = 0
                     var isVolumeAboveThreshold = false
-                    while (bytesWritten < totalAudioLen && isRecording) {
+                    var silenceBytes = 0
+                    val silenceThresholdBytes = sampleRate * 2 * 2 // 2 сек тишины
+
+                    while (bytesCollected < targetBytes && isRecording) {
+                        val buffer = ByteArray(bufferSize)
                         val read = audioRecord.read(buffer, 0, buffer.size)
-                        if (read > 0) {
-                            val shortBuffer = ShortArray(read / 2)
-                            ByteBuffer.wrap(buffer, 0, read)
-                                .order(ByteOrder.LITTLE_ENDIAN)
-                                .asShortBuffer()
-                                .get(shortBuffer)
+                        if (read <= 0) continue
 
-                            val maxAmplitude = shortBuffer.map { kotlin.math.abs(it.toInt()) }.maxOrNull() ?: 0
-                            if (maxAmplitude > volumeThreshold) {
-                                isVolumeAboveThreshold = true
+                        val shortBuffer = ShortArray(read / 2)
+                        ByteBuffer.wrap(buffer, 0, read).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(shortBuffer)
+                        val maxAmplitude = shortBuffer.map { kotlin.math.abs(it.toInt()) }.maxOrNull() ?: 0
+
+                        if (maxAmplitude > volumeThreshold) {
+                            isVolumeAboveThreshold = true
+                            silenceBytes = 0
+                        } else {
+                            silenceBytes += read
+                        }
+
+                        buffers.add(buffer.copyOf(read))
+                        bytesCollected += read
+
+                        // Расширяем длительность чанка, если звук есть, и почти достигли лимита
+                        if (bytesCollected >= targetBytes - bufferSize && isVolumeAboveThreshold) {
+                            if (chunkDurationSec + chunkStepSec <= maxChunkDurationSec) {
+                                chunkDurationSec += chunkStepSec
+                                targetBytes = chunkBytes(chunkDurationSec)
                             }
+                        }
 
-//                            mainHandler.post {
-//                                Toast.makeText(
-//                                    this,
-//                                    "maxAmplitude = $maxAmplitude, threshold = $volumeThreshold",
-//                                    Toast.LENGTH_SHORT
-//                                ).show()
-//                            }
-
-
-                            fos.write(buffer, 0, read)
-                            bytesWritten += read
+                        // Остановить запись, если слишком долго тишина, и запись длиннее минимума
+                        if (silenceBytes >= silenceThresholdBytes && bytesCollected >= chunkBytes(minChunkDurationSec)) {
+                            break
                         }
                     }
-                    fos.flush()
-                    fos.close()
-                    if (!isVolumeAboveThreshold) {
-                        file.delete()
+
+                    // Записываем в файл если звук был и длительность подходит
+                    if (isVolumeAboveThreshold && bytesCollected >= chunkBytes(minChunkDurationSec)) {
+                        FileOutputStream(file).use { fos ->
+                            val totalAudioLen = bytesCollected.toLong()
+                            val totalDataLen = totalAudioLen + 36
+                            val channels = 1
+                            val byteRate = 16 * sampleRate * channels / 8
+
+                            writeWavHeader(fos, totalAudioLen, totalDataLen, sampleRate, channels, byteRate)
+                            buffers.forEach { fos.write(it) }
+                            fos.flush()
+                        }
+                    } else {
+                        // Удаляем файл, если нет звука или запись слишком короткая
+                        if (file.exists()) file.delete()
                         isRecording = false
                     }
                 }
             } catch (e: IOException) {
                 e.printStackTrace()
             } finally {
-                audioRecord.stop()
+                try {
+                    if (audioRecord.recordingState == AudioRecord.RECORDSTATE_RECORDING) audioRecord.stop()
+                } catch (ignored: Exception) {
+                }
                 audioRecord.release()
                 stopSelf()
             }
@@ -143,6 +163,7 @@ class AudioRecordService : Service() {
 
         return START_STICKY
     }
+
 
     override fun onDestroy() {
         val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
